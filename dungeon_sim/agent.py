@@ -31,6 +31,8 @@ class LocalBeliefs:
     exit: BeliefObject = field(default_factory=BeliefObject)
     recent_messages: list[str] = field(default_factory=list)
     announced_facts: set[str] = field(default_factory=set)
+    last_action_signature: str | None = None
+    repeated_no_progress_count: int = 0
 
 
 class LLMGridAgent:
@@ -207,6 +209,17 @@ class LLMGridAgent:
         mission_phase_hint = self._mission_phase_hint(inventory)
         priority_targets = self._priority_targets(inventory)
 
+        forced = self._forced_or_planned_decision(
+            observation=observation,
+            current_turn=current_turn,
+            inventory=inventory,
+            legal_actions=legal_actions,
+            recommended_message=recommended_message,
+        )
+        if forced is not None:
+            self._record_action_signature(forced.action)
+            return forced
+
         payload = {
             "agent_id": self.agent_id,
             "teammate_id": self.teammate_id,
@@ -237,31 +250,205 @@ class LLMGridAgent:
         }
 
         decision = self.llm.decide(system_prompt=self._system_prompt(), user_payload=payload)
-        return self._sanitize_decision(
+        decision = self._sanitize_decision(
             decision=decision,
             legal_actions=legal_actions,
             recommended_message=recommended_message,
         )
+        self._record_action_signature(decision.action)
+        return decision
 
     def _system_prompt(self) -> str:
         return (
             f"You are agent {self.agent_id} in a tiny cooperative dungeon. "
             f"Your teammate is {self.teammate_id}. {self.role_hint} "
             "Return one structured decision only. "
-            "Your goal is not generic exploration. Your real goal is that both agents eventually exit. "
+            "Your goal is that both agents eventually exit. "
+            "Do not behave like a generic explorer. "
             "Use direct observation first, then recent messages, then older beliefs. Do not invent facts. "
             "You must choose only from the provided legal_actions. Never choose an action that is not explicitly legal. "
             "Decision priority order: "
-            "1) If an immediate critical action is legal, do it: pick_up if standing on key; unlock if adjacent to locked door and holding key. "
-            "2) If you have a newly discovered critical fact and teammate may not know it, strongly prefer send_message using the recommended_message when available. "
-            "3) If you know where a critical target is, move to make progress toward it. "
-            "4) Explore only when no higher-priority action is available. "
-            "5) Avoid repeating non-progress actions and avoid wandering once key, door, and exit knowledge is sufficient. "
-            "Keep rationale honest and concise. "
+            "1) If pick_up is legal, choose pick_up immediately. "
+            "2) If unlock is legal, choose unlock immediately. "
+            "3) If you have a newly discovered critical fact and teammate may not know it, strongly prefer send_message using the recommended_message. "
+            "4) If a priority target is known, choose a move that reduces distance to that target. "
+            "5) Explore only when no higher-priority action is available. "
+            "6) Avoid repeated non-progress actions. "
+            "7) Once key, door, and exit knowledge is sufficient, stop generic scouting and converge on completion. "
+            "Keep rationale short and honest. "
             "When choosing move, set direction and leave text null. "
             "When choosing send_message, use a short structured message exactly like KEY (x,y) turn=t or DOOR (x,y) locked turn=t or EXIT (x,y) turn=t. "
             "Do not include markdown."
         )
+
+    def _forced_or_planned_decision(
+        self,
+        *,
+        observation: Observation,
+        current_turn: int,
+        inventory: list[str],
+        legal_actions: list[dict[str, Any]],
+        recommended_message: str | None,
+    ) -> AgentDecision | None:
+        assert self.beliefs is not None
+
+        legal_types = {a["action_type"] for a in legal_actions}
+
+        if "pick_up" in legal_types:
+            return AgentDecision(
+                intent_summary="Pick up the key immediately.",
+                rationale="Standing on the key, so immediate mission-critical action takes priority.",
+                action=AgentAction(action_type="pick_up", direction=None, text=None),
+            )
+
+        if "unlock" in legal_types:
+            return AgentDecision(
+                intent_summary="Unlock the door immediately.",
+                rationale="Adjacent locked door and key is held, so immediate mission-critical action takes priority.",
+                action=AgentAction(action_type="unlock", direction=None, text=None),
+            )
+
+        if recommended_message and self._should_send_now(observation, inventory):
+            parsed = MESSAGE_RE.match(recommended_message)
+            if parsed:
+                kind, x, y, status, _sent_turn = parsed.groups()
+                self.beliefs.announced_facts.add(
+                    self._fact_key(kind, (int(x), int(y)), status)
+                )
+            return AgentDecision(
+                intent_summary="Send critical fact to teammate.",
+                rationale="A newly learned critical fact should be communicated before it becomes stale.",
+                action=AgentAction(action_type="send_message", direction=None, text=recommended_message),
+            )
+
+        target = self._select_target(inventory)
+        if target is not None:
+            move = self._best_move_toward_target(legal_actions, target)
+            if move is not None:
+                target_name = self._target_name(inventory)
+                return AgentDecision(
+                    intent_summary=f"Move toward known {target_name}.",
+                    rationale=f"A critical target is known, so progress toward it is better than more generic exploration.",
+                    action=AgentAction(
+                        action_type="move",
+                        direction=Direction(move["direction"]),
+                        text=None,
+                    ),
+                )
+
+        if self.beliefs.repeated_no_progress_count >= 2:
+            frontier_move = self._best_frontier_move(legal_actions)
+            if frontier_move is not None:
+                return AgentDecision(
+                    intent_summary="Break local repetition by taking a fresh frontier step.",
+                    rationale="Recent behavior showed low progress, so choose a new frontier move instead of repeating a stale pattern.",
+                    action=AgentAction(
+                        action_type="move",
+                        direction=Direction(frontier_move["direction"]),
+                        text=None,
+                    ),
+                )
+
+        return None
+
+    def _should_send_now(self, observation: Observation, inventory: list[str]) -> bool:
+        assert self.beliefs is not None
+
+        if observation.standing_on_key:
+            return True
+        if observation.adjacent_locked_door:
+            return True
+        if observation.standing_on_exit:
+            return True
+
+        if self.beliefs.key.source == "observation" and self._fact_not_announced("KEY", self.beliefs.key):
+            return True
+        if self.beliefs.door.source == "observation" and self._fact_not_announced("DOOR", self.beliefs.door):
+            return True
+        if self.beliefs.exit.source == "observation" and self._fact_not_announced("EXIT", self.beliefs.exit):
+            return True
+
+        has_key = "key" in inventory
+        if not has_key and self.beliefs.key.position is not None and self.beliefs.key.source == "observation":
+            return True
+
+        return False
+
+    def _select_target(self, inventory: list[str]) -> tuple[int, int] | None:
+        assert self.beliefs is not None
+        has_key = "key" in inventory
+
+        if not has_key and self.beliefs.key.position is not None:
+            return self.beliefs.key.position
+
+        if has_key and self.beliefs.door.position is not None and self.beliefs.door.status != "unlocked":
+            return self.beliefs.door.position
+
+        if self.beliefs.exit.position is not None:
+            return self.beliefs.exit.position
+
+        return None
+
+    def _target_name(self, inventory: list[str]) -> str:
+        assert self.beliefs is not None
+        has_key = "key" in inventory
+
+        if not has_key and self.beliefs.key.position is not None:
+            return "key"
+        if has_key and self.beliefs.door.position is not None and self.beliefs.door.status != "unlocked":
+            return "door"
+        if self.beliefs.exit.position is not None:
+            return "exit"
+        return "objective"
+
+    def _best_move_toward_target(
+        self,
+        legal_actions: list[dict[str, Any]],
+        target: tuple[int, int],
+    ) -> dict[str, Any] | None:
+        assert self.beliefs is not None
+        current = self.beliefs.position
+
+        move_actions = [a for a in legal_actions if a["action_type"] == "move"]
+        if not move_actions:
+            return None
+
+        current_dist = self._manhattan(current, target)
+        improving: list[dict[str, Any]] = []
+
+        for action in move_actions:
+            nxt = tuple(action["target"])
+            dist = self._manhattan(nxt, target)
+            if dist < current_dist:
+                enriched = dict(action)
+                enriched["distance_after"] = dist
+                improving.append(enriched)
+
+        if improving:
+            improving.sort(
+                key=lambda a: (
+                    a["distance_after"],
+                    a.get("visited", True),
+                    a["direction"],
+                )
+            )
+            return improving[0]
+
+        move_actions.sort(
+            key=lambda a: (
+                self._manhattan(tuple(a["target"]), target),
+                a.get("visited", True),
+                a["direction"],
+            )
+        )
+        return move_actions[0]
+
+    def _best_frontier_move(self, legal_actions: list[dict[str, Any]]) -> dict[str, Any] | None:
+        move_actions = [a for a in legal_actions if a["action_type"] == "move"]
+        if not move_actions:
+            return None
+        move_actions.sort(key=lambda a: (a.get("visited", True), a["direction"]))
+        return move_actions[0]
 
     def _legal_actions(self, observation: Observation) -> list[dict[str, Any]]:
         actions: list[dict[str, Any]] = []
@@ -362,6 +549,8 @@ class LLMGridAgent:
         for label, obj in candidates:
             if obj.position is None:
                 continue
+            if obj.source != "observation":
+                continue
 
             if label == "DOOR":
                 status = obj.status or "locked"
@@ -385,8 +574,10 @@ class LLMGridAgent:
 
         if has_key and door_known and exit_known:
             return "exit_plan"
-        if key_known and door_known:
+        if has_key and door_known:
             return "door_plan"
+        if key_known and door_known and exit_known:
+            return "full_objective_known"
         if key_known or door_known or exit_known:
             return "critical_fact_known"
         return "explore"
@@ -405,7 +596,7 @@ class LLMGridAgent:
                 }
             )
 
-        if has_key and self.beliefs.door.position is not None:
+        if has_key and self.beliefs.door.position is not None and self.beliefs.door.status != "unlocked":
             targets.append(
                 {
                     "type": "door",
@@ -419,7 +610,7 @@ class LLMGridAgent:
                 {
                     "type": "exit",
                     "position": self.beliefs.exit.position,
-                    "reason": "Exit is known and should become final objective once path is open.",
+                    "reason": "Exit is the final objective once path is open.",
                 }
             )
 
@@ -446,20 +637,18 @@ class LLMGridAgent:
             if chosen_dir in legal_move_dirs:
                 return decision
 
-            fallback = self._fallback_decision(
+            return self._fallback_decision(
                 legal_actions=legal_actions,
                 recommended_message=recommended_message,
                 reason=f"Model chose illegal move direction: {chosen_dir}",
             )
-            return fallback
 
         if action.action_type not in legal_types:
-            fallback = self._fallback_decision(
+            return self._fallback_decision(
                 legal_actions=legal_actions,
                 recommended_message=recommended_message,
                 reason=f"Model chose illegal action type: {action.action_type}",
             )
-            return fallback
 
         if action.action_type == "send_message":
             text = (action.text or "").strip()
@@ -506,25 +695,6 @@ class LLMGridAgent:
         recommended_message: str | None,
         reason: str,
     ) -> AgentDecision:
-        if recommended_message and any(a["action_type"] == "send_message" for a in legal_actions):
-            assert self.beliefs is not None
-            parsed = MESSAGE_RE.match(recommended_message)
-            if parsed:
-                kind, x, y, status, _sent_turn = parsed.groups()
-                self.beliefs.announced_facts.add(
-                    self._fact_key(kind, (int(x), int(y)), status)
-                )
-
-            return AgentDecision(
-                intent_summary="Communicate critical fact safely.",
-                rationale=f"{reason}. Fallback chose a valid structured message.",
-                action=AgentAction(
-                    action_type="send_message",
-                    direction=None,
-                    text=recommended_message,
-                ),
-            )
-
         if any(a["action_type"] == "pick_up" for a in legal_actions):
             return AgentDecision(
                 intent_summary="Take immediate critical action.",
@@ -544,6 +714,25 @@ class LLMGridAgent:
                     action_type="unlock",
                     direction=None,
                     text=None,
+                ),
+            )
+
+        if recommended_message and any(a["action_type"] == "send_message" for a in legal_actions):
+            assert self.beliefs is not None
+            parsed = MESSAGE_RE.match(recommended_message)
+            if parsed:
+                kind, x, y, status, _sent_turn = parsed.groups()
+                self.beliefs.announced_facts.add(
+                    self._fact_key(kind, (int(x), int(y)), status)
+                )
+
+            return AgentDecision(
+                intent_summary="Communicate critical fact safely.",
+                rationale=f"{reason}. Fallback chose a valid structured message.",
+                action=AgentAction(
+                    action_type="send_message",
+                    direction=None,
+                    text=recommended_message,
                 ),
             )
 
@@ -573,6 +762,25 @@ class LLMGridAgent:
                 text=None,
             ),
         )
+
+    def _record_action_signature(self, action: AgentAction) -> None:
+        assert self.beliefs is not None
+        signature = f"{action.action_type}:{action.direction.value if action.direction else ''}:{action.text or ''}"
+        if self.beliefs.last_action_signature == signature:
+            self.beliefs.repeated_no_progress_count += 1
+        else:
+            self.beliefs.repeated_no_progress_count = 0
+        self.beliefs.last_action_signature = signature
+
+    def _fact_not_announced(self, label: str, obj: BeliefObject) -> bool:
+        assert self.beliefs is not None
+        if obj.position is None:
+            return False
+        return self._fact_key(label, obj.position, obj.status) not in self.beliefs.announced_facts
+
+    @staticmethod
+    def _manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
     @staticmethod
     def _fact_key(label: str, position: tuple[int, int], status: str | None) -> str:
