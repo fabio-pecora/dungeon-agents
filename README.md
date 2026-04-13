@@ -218,15 +218,6 @@ This implementation is aligned with the prompt in a few specific ways:
 - it deliberately constrains AI where freeform behavior would hurt reliability
 - it exports the exact run artifacts needed for submission and review
 
-## Submission checklist
-
-Suggested package for submission:
-- source code
-- `outputs/` with a few runs
-- this `README.md`
-- Loom link
-- exported AI chat history
-
 ## Notes on traces
 
 This project focuses on the structured event record layer first:
