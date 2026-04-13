@@ -42,8 +42,22 @@ class DungeonEngine:
             for agent_id, pos in self.scenario.agent_starts.items()
         }
         self.agents = {
-            "A": LLMGridAgent("A", "B", "Prefer scouting left and upper areas first, then support the door plan.", self.llm),
-            "B": LLMGridAgent("B", "A", "Prefer scouting right and lower areas first, then support the door plan.", self.llm),
+            "A": LLMGridAgent(
+                "A",
+                "B",
+                "Prefer systematic coverage from the upper-left side, then converge on the door and exit.",
+                self.llm,
+                grid_width=self.scenario.width,
+                grid_height=self.scenario.height,
+            ),
+            "B": LLMGridAgent(
+                "B",
+                "A",
+                "Prefer systematic coverage from the lower-right side, then carry the key to the door.",
+                self.llm,
+                grid_width=self.scenario.width,
+                grid_height=self.scenario.height,
+            ),
         }
         for agent_id, agent in self.agents.items():
             agent.initialize(self.world[agent_id].position)
@@ -51,33 +65,39 @@ class DungeonEngine:
     def run(self, output_dir: Path, seed: int | None = None) -> tuple[RunLogger, dict[str, AgentWorldState]]:
         logger = RunLogger(output_dir)
         agent_order = ["A", "B"]
+
         while self.turn < self.scenario.turn_limit and not self._all_exited():
             for agent_id in agent_order:
                 if self.turn >= self.scenario.turn_limit or self._all_exited():
                     break
-                state = self.world[agent_id]
-                if state.exited:
+                if self.world[agent_id].exited:
                     continue
+
                 self.turn += 1
                 self._execute_agent_turn(agent_id=agent_id, logger=logger)
+
         return logger, self.world
 
     def _execute_agent_turn(self, agent_id: str, logger: RunLogger) -> None:
         agent = self.agents[agent_id]
-        state = self.world[agent_id]
+
         delivered = self._deliver_messages(agent_id)
         agent.apply_incoming_messages(delivered, self.turn)
+
         observation = self._build_observation(agent_id)
         diagnostics = agent.observe(observation, self.turn)
+
         decision = agent.choose_action(
             observation=observation,
             current_turn=self.turn,
             turn_limit=self.scenario.turn_limit,
-            inventory=list(state.inventory),
+            inventory=list(self.world[agent_id].inventory),
         )
+
         execution = self._apply_action(agent_id, decision)
         assessment = self._assess(agent_id, execution)
         attribution = self._attribute(diagnostics, execution)
+
         event = AgentStepEvent(
             run_id=self.run_id,
             turn=self.turn,
@@ -87,7 +107,9 @@ class DungeonEngine:
             belief_diagnostics=diagnostics,
             messages=MessageEvent(
                 delivered_this_turn=delivered,
-                sent_this_turn=[decision.action.text] if decision.action.action_type == "send_message" and decision.action.text else [],
+                sent_this_turn=[decision.action.text]
+                if decision.action.action_type == "send_message" and decision.action.text
+                else [],
                 inbox_size_after_delivery=len(agent.beliefs.recent_messages if agent.beliefs else []),
             ),
             decision=decision,
@@ -100,11 +122,13 @@ class DungeonEngine:
     def _deliver_messages(self, agent_id: str) -> list[str]:
         delivered: list[str] = []
         remaining: list[dict] = []
+
         for item in self.message_queue:
             if item["recipient"] == agent_id and item["deliver_turn"] <= self.turn:
                 delivered.append(item["text"])
             else:
                 remaining.append(item)
+
         self.message_queue = remaining
         return delivered
 
@@ -112,24 +136,32 @@ class DungeonEngine:
         state = self.world[agent_id]
         visible_cells: list[CellView] = []
         x0, y0 = state.position
+
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 pos = (x0 + dx, y0 + dy)
                 if not in_bounds(pos, self.scenario.width, self.scenario.height):
                     continue
+
                 tile_type = self._tile_type(pos)
                 contains: list[str] = []
+
                 if not self.key_picked and pos == self.scenario.key_pos:
                     contains.append("key")
                 if pos == self.scenario.door_pos:
                     contains.append("door")
                 if pos == self.scenario.exit_pos:
                     contains.append("exit")
-                visible_cells.append(CellView(position=pos, tile_type=tile_type, contains=contains))
+
+                visible_cells.append(
+                    CellView(position=pos, tile_type=tile_type, contains=contains)
+                )
+
         adjacent_locked_door = any(
             add_pos(state.position, delta) == self.scenario.door_pos and self.door_locked
             for delta in DIRECTION_DELTAS.values()
         )
+
         return Observation(
             self_position=state.position,
             visible_cells=visible_cells,
@@ -151,7 +183,10 @@ class DungeonEngine:
     def _apply_action(self, agent_id: str, decision: AgentDecision) -> ActionExecution:
         state = self.world[agent_id]
         action = decision.action
-        tool_output = {"position_before": state.position, "inventory_before": list(state.inventory)}
+        tool_output = {
+            "position_before": state.position,
+            "inventory_before": list(state.inventory),
+        }
 
         if action.action_type == "move":
             if action.direction is None:
@@ -161,7 +196,9 @@ class DungeonEngine:
                     result="Move action omitted direction.",
                     tool_output=tool_output,
                 )
+
             nxt = add_pos(state.position, DIRECTION_DELTAS[action.direction])
+
             if not in_bounds(nxt, self.scenario.width, self.scenario.height):
                 return ActionExecution(
                     requested_action=action.model_dump(),
@@ -169,6 +206,7 @@ class DungeonEngine:
                     result=f"Move blocked: {nxt} is out of bounds.",
                     tool_output=tool_output,
                 )
+
             if nxt in self.scenario.walls:
                 return ActionExecution(
                     requested_action=action.model_dump(),
@@ -176,6 +214,7 @@ class DungeonEngine:
                     result=f"Move blocked by wall at {nxt}.",
                     tool_output=tool_output,
                 )
+
             if nxt == self.scenario.door_pos and self.door_locked:
                 return ActionExecution(
                     requested_action=action.model_dump(),
@@ -183,10 +222,17 @@ class DungeonEngine:
                     result=f"Move blocked by locked door at {nxt}.",
                     tool_output=tool_output,
                 )
+
             state.position = nxt
             if state.position == self.scenario.exit_pos:
                 state.exited = True
-            tool_output.update({"position_after": state.position, "exited": state.exited})
+
+            tool_output.update(
+                {
+                    "position_after": state.position,
+                    "exited": state.exited,
+                }
+            )
             return ActionExecution(
                 requested_action=action.model_dump(),
                 execution_status="executed",
@@ -202,10 +248,18 @@ class DungeonEngine:
                     result="Pick up failed: no key on current cell.",
                     tool_output=tool_output,
                 )
+
             self.key_picked = True
             self.key_holder = agent_id
-            state.inventory.append("key")
-            tool_output.update({"inventory_after": list(state.inventory), "key_holder": agent_id})
+            if "key" not in state.inventory:
+                state.inventory.append("key")
+
+            tool_output.update(
+                {
+                    "inventory_after": list(state.inventory),
+                    "key_holder": agent_id,
+                }
+            )
             return ActionExecution(
                 requested_action=action.model_dump(),
                 execution_status="executed",
@@ -214,7 +268,10 @@ class DungeonEngine:
             )
 
         if action.action_type == "unlock":
-            adjacent = any(add_pos(state.position, delta) == self.scenario.door_pos for delta in DIRECTION_DELTAS.values())
+            adjacent = any(
+                add_pos(state.position, delta) == self.scenario.door_pos
+                for delta in DIRECTION_DELTAS.values()
+            )
             if not adjacent:
                 return ActionExecution(
                     requested_action=action.model_dump(),
@@ -222,6 +279,7 @@ class DungeonEngine:
                     result="Unlock failed: no adjacent door.",
                     tool_output=tool_output,
                 )
+
             if "key" not in state.inventory:
                 return ActionExecution(
                     requested_action=action.model_dump(),
@@ -229,19 +287,26 @@ class DungeonEngine:
                     result="Unlock failed: agent does not hold the key.",
                     tool_output=tool_output,
                 )
+
             if not self.door_locked:
                 return ActionExecution(
                     requested_action=action.model_dump(),
                     execution_status="blocked",
-                    result="Unlock failed: door is already unlocked.",
+                    result="Unlock skipped: door already unlocked.",
                     tool_output=tool_output,
                 )
+
             self.door_locked = False
-            tool_output.update({"door_locked_after": self.door_locked})
+            tool_output.update(
+                {
+                    "door_position": self.scenario.door_pos,
+                    "door_locked_after": self.door_locked,
+                }
+            )
             return ActionExecution(
                 requested_action=action.model_dump(),
                 execution_status="executed",
-                result=f"Unlocked door at {self.scenario.door_pos}.",
+                result=f"Unlocked the door at {self.scenario.door_pos}.",
                 tool_output=tool_output,
             )
 
@@ -251,12 +316,24 @@ class DungeonEngine:
                 return ActionExecution(
                     requested_action=action.model_dump(),
                     execution_status="invalid",
-                    result="Send message failed: empty text.",
+                    result="Send message omitted text.",
                     tool_output=tool_output,
                 )
+
             recipient = "B" if agent_id == "A" else "A"
-            self.message_queue.append({"recipient": recipient, "text": text, "deliver_turn": self.turn + 1})
-            tool_output.update({"recipient": recipient, "deliver_turn": self.turn + 1})
+            self.message_queue.append(
+                {
+                    "recipient": recipient,
+                    "text": text,
+                    "deliver_turn": self.turn + 1,
+                }
+            )
+            tool_output.update(
+                {
+                    "recipient": recipient,
+                    "deliver_turn": self.turn + 1,
+                }
+            )
             return ActionExecution(
                 requested_action=action.model_dump(),
                 execution_status="executed",
@@ -281,32 +358,58 @@ class DungeonEngine:
 
     def _assess(self, agent_id: str, execution: ActionExecution) -> OutcomeAssessment:
         state = self.world[agent_id]
+
         if state.exited:
             return OutcomeAssessment(
                 progress="Reached the exit.",
-                local_reasonableness="Reasonable because exiting is the end goal.",
+                local_reasonableness="Reasonable because exiting is the terminal goal.",
                 failure_or_risk=None,
             )
+
         if execution.execution_status == "blocked":
             return OutcomeAssessment(
                 progress="No world progress this turn.",
-                local_reasonableness="The action may still be locally reasonable if it was based on delayed or partial information.",
+                local_reasonableness=(
+                    "The local choice may still be understandable under delayed communication or partial visibility."
+                ),
                 failure_or_risk=execution.result,
             )
+
+        if execution.execution_status == "invalid":
+            return OutcomeAssessment(
+                progress="No world progress this turn.",
+                local_reasonableness="This action should not have been selected by the rescue policy.",
+                failure_or_risk=execution.result,
+            )
+
         return OutcomeAssessment(
             progress=execution.result,
-            local_reasonableness="Action fits the local plan under partial observability.",
+            local_reasonableness="Action fits the deterministic rescue policy under partial observability.",
             failure_or_risk=None,
         )
 
     def _attribute(self, diagnostics, execution: ActionExecution) -> Attribution:
         if execution.execution_status in {"blocked", "invalid"}:
             if diagnostics.stale_beliefs:
-                return Attribution(primary_source="communication", note="Blocked action appears linked to delayed or stale communicated belief.")
-            return Attribution(primary_source="agent", note="Blocked or invalid action came from the acting agent's choice.")
+                return Attribution(
+                    primary_source="communication",
+                    note="Failure likely came from stale or delayed communicated beliefs.",
+                )
+            return Attribution(
+                primary_source="agent",
+                note="Failure came from the local policy choice on this turn.",
+            )
+
         if diagnostics.stale_beliefs:
-            return Attribution(primary_source="communication", note="Communication affected this turn but did not fully derail it.")
-        return Attribution(primary_source="none", note="No obvious failure source this turn.")
+            return Attribution(
+                primary_source="communication",
+                note="Delayed communication shaped the turn but did not break it.",
+            )
+
+        return Attribution(
+            primary_source="system",
+            note="Deterministic rescue policy executed as intended.",
+        )
 
     def _all_exited(self) -> bool:
         return all(state.exited for state in self.world.values())
