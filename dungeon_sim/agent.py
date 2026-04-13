@@ -103,6 +103,7 @@ class LLMGridAgent:
                 self.beliefs.key.position == pos
                 and self.beliefs.key.source
                 and self.beliefs.key.source.startswith("message")
+                and self.beliefs.key.status not in {"taken", "held_by_teammate", "held_by_self"}
             ):
                 stale.append(f"Key message may be stale at {pos}; key not visible now.")
 
@@ -137,6 +138,14 @@ class LLMGridAgent:
                 age=0,
             )
 
+        if "key" in observation.inventory:
+            self.beliefs.key = BeliefObject(
+                position=observation.self_position,
+                status="held_by_self",
+                source="observation",
+                age=0,
+            )
+
         if observation.standing_on_exit:
             self.beliefs.exit = BeliefObject(
                 position=observation.self_position,
@@ -152,7 +161,12 @@ class LLMGridAgent:
         ):
             if obj.position is not None and obj.age is not None:
                 obj.age += 1
-                if obj.age >= 4 and obj.source and obj.source.startswith("message"):
+                if (
+                    obj.age >= 4
+                    and obj.source
+                    and obj.source.startswith("message")
+                    and obj.status not in {"taken", "held_by_teammate", "held_by_self"}
+                ):
                     stale.append(
                         f"{obj_name.capitalize()} belief from message is getting old (age={obj.age})."
                     )
@@ -160,7 +174,7 @@ class LLMGridAgent:
         notes.append(f"Visited {len(self.beliefs.visited)} cells so far.")
 
         if self.beliefs.key.position and self.beliefs.key.source == "observation":
-            notes.append("Key location is directly observed and reliable.")
+            notes.append("Key location/status is directly observed and reliable.")
         if self.beliefs.door.position and self.beliefs.door.source == "observation":
             notes.append("Door location/status is directly observed and reliable.")
         if self.beliefs.exit.position and self.beliefs.exit.source == "observation":
@@ -220,6 +234,24 @@ class LLMGridAgent:
             self._record_action_signature(forced.action)
             return forced
 
+        if not priority_targets:
+            explore_move = self._best_exploration_move(
+                observation=observation,
+                legal_actions=legal_actions,
+            )
+            if explore_move is not None:
+                decision = AgentDecision(
+                    intent_summary="Explore highest-value frontier.",
+                    rationale="No critical target is known yet, so choose the legal move that reveals the most new map information.",
+                    action=AgentAction(
+                        action_type="move",
+                        direction=Direction(explore_move["direction"]),
+                        text=None,
+                    ),
+                )
+                self._record_action_signature(decision.action)
+                return decision
+
         payload = {
             "agent_id": self.agent_id,
             "teammate_id": self.teammate_id,
@@ -236,6 +268,7 @@ class LLMGridAgent:
             "recommended_message": recommended_message,
             "message_format_examples": [
                 "KEY (1,5) turn=5",
+                "KEY (1,5) taken turn=6",
                 "DOOR (6,1) locked turn=7",
                 "EXIT (7,1) turn=8",
             ],
@@ -270,14 +303,15 @@ class LLMGridAgent:
             "Decision priority order: "
             "1) If pick_up is legal, choose pick_up immediately. "
             "2) If unlock is legal, choose unlock immediately. "
-            "3) If you have a newly discovered critical fact and teammate may not know it, strongly prefer send_message using the recommended_message. "
+            "3) If you have newly discovered a critical fact or a previously announced fact has materially changed, strongly prefer send_message using the recommended_message. "
             "4) If a priority target is known, choose a move that reduces distance to that target. "
             "5) Explore only when no higher-priority action is available. "
             "6) Avoid repeated non-progress actions. "
             "7) Once key, door, and exit knowledge is sufficient, stop generic scouting and converge on completion. "
+            "If the key has already been taken, do not keep moving toward the old key location. "
             "Keep rationale short and honest. "
             "When choosing move, set direction and leave text null. "
-            "When choosing send_message, use a short structured message exactly like KEY (x,y) turn=t or DOOR (x,y) locked turn=t or EXIT (x,y) turn=t. "
+            "When choosing send_message, use a short structured message exactly like KEY (x,y) turn=t, KEY (x,y) taken turn=t, DOOR (x,y) locked turn=t, or EXIT (x,y) turn=t. "
             "Do not include markdown."
         )
 
@@ -311,13 +345,13 @@ class LLMGridAgent:
         if recommended_message and self._should_send_now(observation, inventory):
             parsed = MESSAGE_RE.match(recommended_message)
             if parsed:
-                kind, x, y, status, _sent_turn = parsed.groups()
+                kind, x, y, _status, _sent_turn = parsed.groups()
                 self.beliefs.announced_facts.add(
                     self._fact_key(kind, (int(x), int(y)))
                 )
             return AgentDecision(
                 intent_summary="Send critical fact to teammate.",
-                rationale="A newly learned critical fact should be communicated before it becomes stale.",
+                rationale="A newly learned or changed critical fact should be communicated before it becomes stale.",
                 action=AgentAction(action_type="send_message", direction=None, text=recommended_message),
             )
 
@@ -350,7 +384,7 @@ class LLMGridAgent:
                 )
 
         return None
-    
+
     def _should_send_now(self, observation: Observation, inventory: list[str]) -> bool:
         assert self.beliefs is not None
 
@@ -372,13 +406,16 @@ class LLMGridAgent:
         if self.beliefs.exit.source == "observation" and self._fact_not_announced("EXIT", self.beliefs.exit):
             return True
 
+        if "key" in inventory and self.beliefs.key.position is not None and self.beliefs.key.status != "taken":
+            return True
+
         return False
 
     def _select_target(self, inventory: list[str]) -> tuple[int, int] | None:
         assert self.beliefs is not None
         has_key = "key" in inventory
 
-        if not has_key and self.beliefs.key.position is not None:
+        if not has_key and self.beliefs.key.position is not None and self.beliefs.key.status not in {"taken", "held_by_teammate"}:
             return self.beliefs.key.position
 
         if has_key and self.beliefs.door.position is not None and self.beliefs.door.status != "unlocked":
@@ -393,7 +430,7 @@ class LLMGridAgent:
         assert self.beliefs is not None
         has_key = "key" in inventory
 
-        if not has_key and self.beliefs.key.position is not None:
+        if not has_key and self.beliefs.key.position is not None and self.beliefs.key.status not in {"taken", "held_by_teammate"}:
             return "key"
         if has_key and self.beliefs.door.position is not None and self.beliefs.door.status != "unlocked":
             return "door"
@@ -449,6 +486,55 @@ class LLMGridAgent:
             return None
         move_actions.sort(key=lambda a: (a.get("visited", True), a["direction"]))
         return move_actions[0]
+
+    def _best_exploration_move(
+        self,
+        *,
+        observation: Observation,
+        legal_actions: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        assert self.beliefs is not None
+
+        move_actions = [a for a in legal_actions if a["action_type"] == "move"]
+        if not move_actions:
+            return None
+
+        scored: list[dict[str, Any]] = []
+        for action in move_actions:
+            nxt = tuple(action["target"])
+
+            unvisited_bonus = 2 if not action.get("visited", True) else 0
+
+            unknown_neighbors = 0
+            for delta in DIRECTION_DELTAS.values():
+                candidate = (nxt[0] + delta[0], nxt[1] + delta[1])
+                if candidate not in self.beliefs.known_cells:
+                    unknown_neighbors += 1
+
+            edge_penalty = 1 if nxt[0] in {0, 7} or nxt[1] in {0, 7} else 0
+
+            role_bonus = 0
+            if self.agent_id == "A":
+                role_bonus = -(nxt[0] + nxt[1])
+            elif self.agent_id == "B":
+                role_bonus = (nxt[0] + nxt[1])
+
+            total_score = (unknown_neighbors * 10) + (unvisited_bonus * 5) - edge_penalty
+
+            enriched = dict(action)
+            enriched["score"] = total_score
+            enriched["role_bonus"] = role_bonus
+            scored.append(enriched)
+
+        scored.sort(
+            key=lambda a: (
+                -a["score"],
+                -a["role_bonus"],
+                a.get("visited", True),
+                a["direction"],
+            )
+        )
+        return scored[0]
 
     def _legal_actions(self, observation: Observation) -> list[dict[str, Any]]:
         actions: list[dict[str, Any]] = []
@@ -536,12 +622,14 @@ class LLMGridAgent:
 
         options.sort(key=lambda item: (item["visited"], item["direction"]))
         return options
-    
+
     def _recommended_message(self, current_turn: int, inventory: list[str]) -> str | None:
         assert self.beliefs is not None
 
-        has_key = "key" in inventory
+        if "key" in inventory and self.beliefs.key.position is not None and self.beliefs.key.status != "taken":
+            return f"KEY ({self.beliefs.key.position[0]},{self.beliefs.key.position[1]}) taken turn={current_turn}"
 
+        has_key = "key" in inventory
         candidates: list[tuple[str, BeliefObject]] = []
 
         if not has_key:
@@ -560,7 +648,10 @@ class LLMGridAgent:
                 status = obj.status or "locked"
                 message = f"{label} ({obj.position[0]},{obj.position[1]}) {status} turn={current_turn}"
             else:
-                message = f"{label} ({obj.position[0]},{obj.position[1]}) turn={current_turn}"
+                if obj.status in {"taken", "held_by_self", "held_by_teammate"}:
+                    message = f"{label} ({obj.position[0]},{obj.position[1]}) taken turn={current_turn}"
+                else:
+                    message = f"{label} ({obj.position[0]},{obj.position[1]}) turn={current_turn}"
 
             fact_key = self._fact_key(label, obj.position)
             if fact_key not in self.beliefs.announced_facts:
@@ -591,7 +682,7 @@ class LLMGridAgent:
         targets: list[dict[str, Any]] = []
         has_key = "key" in inventory
 
-        if not has_key and self.beliefs.key.position is not None:
+        if not has_key and self.beliefs.key.position is not None and self.beliefs.key.status not in {"taken", "held_by_teammate"}:
             targets.append(
                 {
                     "type": "key",
@@ -659,20 +750,24 @@ class LLMGridAgent:
             if text:
                 parsed = MESSAGE_RE.match(text)
                 if parsed:
-                    kind, x, y, _status, _sent_turn = parsed.groups()
+                    kind, x, y, status, _sent_turn = parsed.groups()
                     fact_key = self._fact_key(kind, (int(x), int(y)))
                     assert self.beliefs is not None
                     self.beliefs.announced_facts.add(fact_key)
+                    if kind == "KEY" and status == "taken":
+                        self.beliefs.key.status = "taken"
                     return decision
 
             if recommended_message:
                 assert self.beliefs is not None
                 parsed = MESSAGE_RE.match(recommended_message)
                 if parsed:
-                    kind, x, y, _status, _sent_turn = parsed.groups()
+                    kind, x, y, status, _sent_turn = parsed.groups()
                     self.beliefs.announced_facts.add(
                         self._fact_key(kind, (int(x), int(y)))
                     )
+                    if kind == "KEY" and status == "taken":
+                        self.beliefs.key.status = "taken"
 
                 return AgentDecision(
                     intent_summary="Send newly learned critical fact to teammate.",
@@ -725,10 +820,12 @@ class LLMGridAgent:
             assert self.beliefs is not None
             parsed = MESSAGE_RE.match(recommended_message)
             if parsed:
-                kind, x, y, _status, _sent_turn = parsed.groups()
+                kind, x, y, status, _sent_turn = parsed.groups()
                 self.beliefs.announced_facts.add(
                     self._fact_key(kind, (int(x), int(y)))
                 )
+                if kind == "KEY" and status == "taken":
+                    self.beliefs.key.status = "taken"
 
             return AgentDecision(
                 intent_summary="Communicate critical fact safely.",
