@@ -1,0 +1,36 @@
+{
+  "run_id": "run_f7733265",
+  "seed": 7,
+  "model": "gpt-5.2",
+  "turn_limit": 38,
+  "turns_executed": 38,
+  "success": false,
+  "outcome": "Run ended before both agents exited.",
+  "both_agents_exited": false,
+  "incidents": [],
+  "communication_findings": [],
+  "recommendations": [
+    "Tighten the system prompt so agents prioritize the exit plan once door and key are known.",
+    "Encourage faster communication when key, door, or exit is discovered."
+  ],
+  "final_agent_states": {
+    "A": {
+      "position": [
+        2,
+        4
+      ],
+      "inventory": [
+        "key"
+      ],
+      "exited": false
+    },
+    "B": {
+      "position": [
+        7,
+        6
+      ],
+      "inventory": [],
+      "exited": false
+    }
+  }
+}

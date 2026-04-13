@@ -1,0 +1,54 @@
+{
+  "run_id": "run_6409e4e7",
+  "seed": 7,
+  "model": "gpt-5.2",
+  "turn_limit": 40,
+  "turns_executed": 40,
+  "success": true,
+  "outcome": "Both agents reached the exit.",
+  "both_agents_exited": true,
+  "incidents": [
+    "Turn 15 A: KEY belief at (2, 6) is aging (age=4) and only message-backed.",
+    "Turn 16 B: DOOR belief at (6, 1) is aging (age=4) and only message-backed.",
+    "Turn 17 A: KEY belief at (2, 6) is aging (age=5) and only message-backed.",
+    "Turn 18 B: DOOR belief at (6, 1) is aging (age=5) and only message-backed.",
+    "Turn 20 B: DOOR belief at (6, 1) is aging (age=6) and only message-backed.",
+    "Turn 22 B: DOOR belief at (6, 1) is aging (age=7) and only message-backed.",
+    "Turn 23 A: KEY belief at (2, 6) is aging (age=4) and only message-backed.",
+    "Turn 24 B: DOOR belief at (6, 1) is aging (age=8) and only message-backed.",
+    "Turn 25 A: KEY belief at (2, 6) is aging (age=5) and only message-backed.",
+    "Turn 26 B: DOOR belief at (6, 1) is aging (age=9) and only message-backed.",
+    "Turn 27 A: KEY belief at (2, 6) is aging (age=6) and only message-backed.",
+    "Turn 28 B: DOOR belief at (6, 1) is aging (age=10) and only message-backed."
+  ],
+  "communication_findings": [
+    "Turn 11 A received 1 delayed message(s).",
+    "Turn 12 B received 1 delayed message(s).",
+    "Turn 19 A received 1 delayed message(s).",
+    "Turn 28 B received 1 delayed message(s)."
+  ],
+  "recommendations": [
+    "Reduce generic scouting language in the prompt and explicitly prioritize progress toward known critical targets.",
+    "Emphasize message age in the prompt so agents distrust stale message-only beliefs."
+  ],
+  "final_agent_states": {
+    "A": {
+      "position": [
+        7,
+        1
+      ],
+      "inventory": [],
+      "exited": true
+    },
+    "B": {
+      "position": [
+        7,
+        1
+      ],
+      "inventory": [
+        "key"
+      ],
+      "exited": true
+    }
+  }
+}

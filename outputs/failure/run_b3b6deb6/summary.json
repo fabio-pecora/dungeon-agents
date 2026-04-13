@@ -1,0 +1,44 @@
+{
+  "run_id": "run_b3b6deb6",
+  "seed": 7,
+  "model": "gpt-5.2",
+  "turn_limit": 40,
+  "turns_executed": 40,
+  "success": false,
+  "outcome": "Run ended before both agents exited.",
+  "both_agents_exited": false,
+  "incidents": [],
+  "communication_findings": [
+    "Turn 11 A received 1 delayed message(s).",
+    "Turn 13 A received 1 delayed message(s).",
+    "Turn 15 A received 1 delayed message(s).",
+    "Turn 17 A received 1 delayed message(s).",
+    "Turn 18 B received 1 delayed message(s).",
+    "Turn 19 A received 1 delayed message(s).",
+    "Turn 20 B received 1 delayed message(s).",
+    "Turn 21 A received 1 delayed message(s).",
+    "Turn 22 B received 1 delayed message(s).",
+    "Turn 23 A received 1 delayed message(s)."
+  ],
+  "recommendations": [
+    "Tighten the prompt so agents switch from exploration to completion once key, door, and exit knowledge is sufficient."
+  ],
+  "final_agent_states": {
+    "A": {
+      "position": [
+        1,
+        5
+      ],
+      "inventory": [],
+      "exited": false
+    },
+    "B": {
+      "position": [
+        3,
+        7
+      ],
+      "inventory": [],
+      "exited": false
+    }
+  }
+}

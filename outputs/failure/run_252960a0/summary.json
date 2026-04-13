@@ -1,0 +1,40 @@
+{
+  "run_id": "run_252960a0",
+  "seed": 7,
+  "model": "gpt-5.2",
+  "turn_limit": 40,
+  "turns_executed": 40,
+  "success": false,
+  "outcome": "Run ended before both agents exited.",
+  "both_agents_exited": false,
+  "incidents": [],
+  "communication_findings": [
+    "Turn 11 A received 1 delayed message(s).",
+    "Turn 16 B received 1 delayed message(s).",
+    "Some structured communication happened, but critical facts were not shared aggressively enough."
+  ],
+  "recommendations": [
+    "Tighten the prompt so agents switch from exploration to completion once key, door, and exit knowledge is sufficient.",
+    "Make communication of newly discovered key, door, and exit facts a stronger default priority."
+  ],
+  "final_agent_states": {
+    "A": {
+      "position": [
+        2,
+        7
+      ],
+      "inventory": [],
+      "exited": false
+    },
+    "B": {
+      "position": [
+        4,
+        0
+      ],
+      "inventory": [
+        "key"
+      ],
+      "exited": false
+    }
+  }
+}

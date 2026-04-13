@@ -1,0 +1,49 @@
+{
+  "run_id": "run_7e5070b8",
+  "seed": 7,
+  "model": "gpt-5.2",
+  "turn_limit": 40,
+  "turns_executed": 40,
+  "success": false,
+  "outcome": "Run ended before both agents exited.",
+  "both_agents_exited": false,
+  "incidents": [
+    "Turn 40 B: Door belief from message is getting old (age=4)."
+  ],
+  "communication_findings": [
+    "Turn 11 A received 1 delayed message(s).",
+    "Turn 16 B received 1 delayed message(s).",
+    "Turn 19 A received 1 delayed message(s).",
+    "Turn 21 A received 1 delayed message(s).",
+    "Turn 23 A received 1 delayed message(s).",
+    "Turn 25 A received 1 delayed message(s).",
+    "Turn 27 A received 1 delayed message(s).",
+    "Turn 29 A received 1 delayed message(s).",
+    "Turn 31 A received 1 delayed message(s).",
+    "Turn 33 A received 1 delayed message(s)."
+  ],
+  "recommendations": [
+    "Tighten the prompt so agents switch from exploration to completion once key, door, and exit knowledge is sufficient.",
+    "Emphasize message age in the prompt so agents distrust stale message-only beliefs."
+  ],
+  "final_agent_states": {
+    "A": {
+      "position": [
+        6,
+        0
+      ],
+      "inventory": [],
+      "exited": false
+    },
+    "B": {
+      "position": [
+        2,
+        6
+      ],
+      "inventory": [
+        "key"
+      ],
+      "exited": false
+    }
+  }
+}

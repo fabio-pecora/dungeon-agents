@@ -1,0 +1,54 @@
+{
+  "run_id": "run_05ce64ea",
+  "seed": 7,
+  "model": "gpt-5.2",
+  "turn_limit": 40,
+  "turns_executed": 40,
+  "success": false,
+  "outcome": "Run ended before both agents exited.",
+  "both_agents_exited": false,
+  "incidents": [
+    "Turn 22 B: Key belief from message is getting old (age=4).",
+    "Turn 24 B: Key belief from message is getting old (age=5).",
+    "Turn 26 B: Key belief from message is getting old (age=6).",
+    "Turn 28 B: Key message may be stale at (2, 6); key not visible now.",
+    "Turn 28 B: Key belief from message is getting old (age=7).",
+    "Turn 30 B: Key message may be stale at (2, 6); key not visible now.",
+    "Turn 30 B: Key belief from message is getting old (age=8).",
+    "Turn 32 B: Key message may be stale at (2, 6); key not visible now.",
+    "Turn 34 B: Key message may be stale at (2, 6); key not visible now.",
+    "Turn 36 B: Key message may be stale at (2, 6); key not visible now.",
+    "Turn 36 B: Key belief from message is getting old (age=4).",
+    "Turn 38 B: Key message may be stale at (2, 6); key not visible now."
+  ],
+  "communication_findings": [
+    "Turn 18 B received 1 delayed message(s).",
+    "Turn 32 B received 1 delayed message(s).",
+    "Some structured communication happened, but critical facts were not shared aggressively enough."
+  ],
+  "recommendations": [
+    "Tighten the prompt so agents switch from exploration to completion once key, door, and exit knowledge is sufficient.",
+    "Make communication of newly discovered key, door, and exit facts a stronger default priority.",
+    "Emphasize message age in the prompt so agents distrust stale message-only beliefs."
+  ],
+  "final_agent_states": {
+    "A": {
+      "position": [
+        1,
+        0
+      ],
+      "inventory": [
+        "key"
+      ],
+      "exited": false
+    },
+    "B": {
+      "position": [
+        2,
+        6
+      ],
+      "inventory": [],
+      "exited": false
+    }
+  }
+}
